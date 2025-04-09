@@ -3,7 +3,7 @@ from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 
 # Available models
-AVAILABLE_MODELS = ["llava", "llama2-uncensored", "starling-lm", "neural-chat", "mistral", "llama3.2", "gemma3", "llama3.2-vision", "llama3", "0xroyce/plutus", "ALIENTELLIGENCE/psychologistv2"]
+AVAILABLE_MODELS = ["gemma3", "llama3.2-vision", "llama3", "ALIENTELLIGENCE/psychologistv2", "llava", "mistral"]
 
 template = """
 <s>[INST] <<SYS>>
@@ -24,7 +24,7 @@ Answer:
 </s>
 """
 
-model = OllamaLLM(model="llava")
+model = OllamaLLM(model="gemma3")
 prompt = ChatPromptTemplate.from_template(template)
 chain = prompt | model
 
@@ -43,7 +43,7 @@ chain = prompt | model
 class ChatBot:
     def __init__(self):
         self.context = ""
-        self.current_model = "llava"
+        self.current_model = "gemma3"
 
     def chat(self, message, history, model_name):
         # Update model if changed
@@ -78,7 +78,7 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
         model_dropdown = gr.Dropdown(
             AVAILABLE_MODELS,
             label="Select Model",
-            value="llava"
+            value="gemma3"
         )
 
     chatbot_interface = gr.ChatInterface(
