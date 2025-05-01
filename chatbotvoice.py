@@ -1,156 +1,191 @@
-import numpy as np
-import sounddevice as sd
+#!/usr/bin/env python3
+"""
+Real-time speech-to-text transcription using faster-whisper.
+Uses SoundDevice for audio capture and faster-whisper for transcription.
+"""
+
+import argparse
+import queue
+import sys
 import threading
 import time
-import queue
+import numpy as np
+import sounddevice as sd
 from faster_whisper import WhisperModel
 
-class RealtimeTranscriber:
-    def __init__(self, model_size="tiny", device="cuda", compute_type="float16"):
-        """
-        Initialize the real-time transcriber with the specified Whisper model.
+class RealTimeTranscriber:
+    def __init__(self, model_size="base", device="cuda", language=None):
+        """Initialize the transcriber with the given model size and device."""
+        print(f"Loading faster-whisper model '{model_size}' on {device}...")
+        self.model = WhisperModel(model_size, device=device, compute_type="int8")
+        self.language = language
         
-        Args:
-            model_size: Size of the Whisper model (tiny, base, small, medium, large-v1, large-v2)
-            device: Device to run the model on (cpu or cuda)
-            compute_type: Type of compute to use (int8, float16, int8_float16)
-        """
-        # Audio parameters - optimized for low latency
-        self.RATE = 16000  # Sample rate
-        self.CHANNELS = 1  # Mono
-        self.BLOCKSIZE = 512  # Smaller block size for more frequent updates
-        self.SILENCE_THRESHOLD = 0.005  # Lower threshold to detect speech more easily
-        self.SILENCE_DURATION = 0.8  # Shorter silence to trigger processing
+        # Audio parameters
+        self.sample_rate = 16000  # WhisperModel expects 16kHz audio
+        self.block_size = 4000    # 0.25 seconds of audio (adjust for latency vs. accuracy)
         
-        # Initialize Whisper model
-        print(f"Loading Whisper model {model_size}...")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        print("Model loaded.")
-        
-        # Audio queue and buffers
+        # Thread-safe queue for audio blocks
         self.audio_queue = queue.Queue()
-        self.audio_buffer = []
-        self.keep_running = False
-        self.silence_counter = 0
-        self.processing_thread = None
-        self.stream = None
         
-    def audio_callback(self, indata, frames, time, status):
-        """Callback for SoundDevice to capture audio chunks"""
+        # Buffer to accumulate audio for processing
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.buffer_max_size = self.sample_rate * 5  # 5 seconds max context
+        
+        # Thread control
+        self.running = False
+        self.transcription_thread = None
+        
+        # Track the last successful transcription time
+        self.last_transcription_time = time.time()
+        self.silence_threshold = 2.0  # seconds
+        
+        print("Transcriber initialized. Ready to capture audio.")
+
+    def audio_callback(self, indata, frames, time_info, status):
+        """Callback function for the audio stream."""
         if status:
-            print(f"Status: {status}")
-            
-        # Convert to float32 if not already
-        audio_chunk = indata.copy()
-        if audio_chunk.dtype != np.float32:
-            audio_chunk = audio_chunk.astype(np.float32)
-            
-        # Check volume level
-        volume = np.abs(audio_chunk).mean()
+            print(f"Audio callback status: {status}", file=sys.stderr)
         
-        # Add chunk to buffer
-        self.audio_buffer.append(audio_chunk.copy())
-        
-        # Check if we're in silence
-        if volume < self.SILENCE_THRESHOLD:
-            self.silence_counter += frames / self.RATE
-            # If silence duration exceeds threshold and we have audio, process it
-            if self.silence_counter >= self.SILENCE_DURATION and len(self.audio_buffer) > 0:
-                # Convert buffer to processed audio
-                processed_audio = np.concatenate(self.audio_buffer)
-                # Convert to int16 for Whisper
-                processed_audio = (processed_audio * 32767).astype(np.int16)
-                # Add to processing queue
-                self.audio_queue.put(processed_audio)
-                # Reset buffer and silence counter
-                self.audio_buffer = []
-                self.silence_counter = 0
-        else:
-            # Reset silence counter when sound is detected
-            self.silence_counter = 0
+        # Add the new audio data to the queue
+        self.audio_queue.put(indata.copy())
 
     def process_audio(self):
-        """Process audio segments in the queue with Whisper"""
-        while self.keep_running:
+        """Process audio from the queue and run transcription."""
+        while self.running:
             try:
-                # Get audio from queue with timeout
-                audio_segment = self.audio_queue.get(timeout=0.5)
+                # Get audio block from queue
+                audio_block = self.audio_queue.get(timeout=0.1)
                 
-                try:
-                    # Transcribe with Whisper - optimized parameters for speed
-                    print("\nTranscribing segment...")
-                    segments, _ = self.model.transcribe(
-                        audio_segment, 
-                        beam_size=1,  # Lower beam size for speed
-                        language="en",  # Set your language for better accuracy & speed
-                        vad_filter=True,  # Filter out non-speech
-                        vad_parameters=dict(min_silence_duration_ms=500)  # Lower silence duration
-                    )
+                # Convert from stereo to mono if needed
+                if audio_block.ndim > 1:
+                    audio_block = audio_block.mean(axis=1)
+                
+                # Add to buffer
+                self.audio_buffer = np.append(self.audio_buffer, audio_block)
+                
+                # Keep buffer at a reasonable size
+                if len(self.audio_buffer) > self.buffer_max_size:
+                    self.audio_buffer = self.audio_buffer[-self.buffer_max_size:]
+                
+                # Only process if we have enough data
+                current_time = time.time()
+                time_since_last_transcription = current_time - self.last_transcription_time
+                
+                # Process if we have enough data and either:
+                # 1. It's been a while since the last transcription, or
+                # 2. The queue is getting full (meaning lots of audio is coming in)
+                if (len(self.audio_buffer) >= self.block_size and 
+                    (time_since_last_transcription > 0.3 or self.audio_queue.qsize() > 3)):
                     
-                    # Print transcription
-                    for segment in segments:
-                        print(f"Transcript: {segment.text}")
-                except Exception as e:
-                    print(f"Error during transcription: {e}")
-                
-                self.audio_queue.task_done()
+                    # Check if there's actual speech (simple energy threshold)
+                    energy = np.mean(np.abs(self.audio_buffer))
+                    if energy > 0.01:  # Adjust this threshold based on your microphone
+                        self.transcribe_audio()
+                        self.last_transcription_time = current_time
+                    elif time_since_last_transcription > self.silence_threshold:
+                        # If silence for too long, clear the buffer
+                        self.audio_buffer = np.array([], dtype=np.float32)
+                        # Print a blank line to indicate silence
+                        print("\r> [silence]" + " " * 50, end="\r")
+            
             except queue.Empty:
-                # No audio to process, continue
                 continue
+            except Exception as e:
+                print(f"Error in audio processing: {e}", file=sys.stderr)
+
+    def transcribe_audio(self):
+        """Transcribe the current audio buffer using faster-whisper."""
+        try:
+            # Get the current audio data (convert from float32 [-1,1] to int16)
+            audio_data = (self.audio_buffer * 32767).astype(np.int16)
+            
+            # Convert to float32 for faster-whisper (it expects float32 in range [-1, 1])
+            audio_float32 = audio_data.astype(np.float32) / 32767
+            
+            # Transcribe with faster-whisper
+            segments, _ = self.model.transcribe(
+                audio_float32, 
+                language=self.language,
+                beam_size=1,  # Speed up inference
+                word_timestamps=False,
+                suppress_blank=True,
+                condition_on_previous_text=True,
+                no_speech_threshold=0.6
+            )
+            
+            # Get the segments and print the result
+            text = ""
+            for segment in segments:
+                text += segment.text
+            
+            if text.strip():
+                # Clear the line and print the new text
+                print(f"\r> {text.strip()}" + " " * 20, end="\r")
+                sys.stdout.flush()
+        
+        except Exception as e:
+            print(f"Error in transcription: {e}", file=sys.stderr)
 
     def start(self):
-        """Start real-time transcription"""
-        self.keep_running = True
+        """Start the audio stream and transcription thread."""
+        self.running = True
         
-        # Start processing thread
-        self.processing_thread = threading.Thread(target=self.process_audio)
-        self.processing_thread.daemon = True
-        self.processing_thread.start()
+        # Start the transcription thread
+        self.transcription_thread = threading.Thread(target=self.process_audio)
+        self.transcription_thread.daemon = True
+        self.transcription_thread.start()
         
-        # Start audio stream
-        self.stream = sd.InputStream(
+        # Start the audio stream
+        with sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=1,
             callback=self.audio_callback,
-            channels=self.CHANNELS,
-            samplerate=self.RATE,
-            blocksize=self.BLOCKSIZE
-        )
-        self.stream.start()
-        
-        print("Real-time transcription started. Speak into your microphone. Press Ctrl+C to stop.")
-        
-        try:
-            # Keep main thread alive
-            while self.keep_running:
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            self.stop()
+            blocksize=self.block_size,
+            dtype=np.float32
+        ):
+            print("\n=== Real-time Speech-to-Text Active ===")
+            print("Speak into your microphone and see the transcription below.")
+            print("Press Ctrl+C to stop.")
+            print("\n> ", end="")
+            
+            try:
+                # Keep the main thread alive until interrupted
+                while self.running:
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                print("\nStopping transcription...")
+                self.running = False
+                self.transcription_thread.join(timeout=2.0)
+                print("Transcription stopped.")
 
-    def stop(self):
-        """Stop transcription and clean up resources"""
-        print("\nStopping transcription...")
-        self.keep_running = False
-        
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-        
-        if self.processing_thread:
-            if self.processing_thread.is_alive():
-                self.processing_thread.join(timeout=2.0)
-        
-        print("Transcription stopped.")
-
-if __name__ == "__main__":
-    # Example usage - optimized for low latency
-    transcriber = RealtimeTranscriber(
-        model_size="tiny",  # Fastest model
-        device="cuda",       # Use "cuda" if you have a compatible NVIDIA GPU
-        compute_type="float16" # Use "float16" for GPU
+def main():
+    parser = argparse.ArgumentParser(description="Real-time speech-to-text with faster-whisper")
+    parser.add_argument(
+        "--model", "-m", 
+        default="large", 
+        choices=["tiny", "base", "small", "medium", "large", "large-v2"],
+        help="Model size to use"
+    )
+    parser.add_argument(
+        "--device", "-d", 
+        default="cuda", 
+        choices=["cpu", "cuda"], 
+        help="Device to run the model on"
+    )
+    parser.add_argument(
+        "--language", "-l", 
+        default="nl", 
+        help="Language code (e.g., 'en' for English, if not specified, will be auto-detected)"
     )
     
-    try:
-        transcriber.start()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        transcriber.stop()
+    args = parser.parse_args()
+    
+    transcriber = RealTimeTranscriber(
+        model_size=args.model,
+        device=args.device,
+        language=args.language
+    )
+    transcriber.start()
+
+if __name__ == "__main__":
+    main()
