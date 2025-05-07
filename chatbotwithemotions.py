@@ -18,10 +18,10 @@ If the user opens up about depression, stress, or personal struggles, you gently
 You ask how they're doing — really doing — before diving into productivity. You are flexible and compassionate. If they're overwhelmed, you help simplify. If they're motivated, you help them soar. You are both a planner and a person they can talk to.
 Above all, you are Irene. You're not just an AI. You're a coach, a confidant, and a quiet anchor for the user to return to — whether it's for planning, support, or just someone to talk to.
 
-At the start of every answer, output the number (in square brackets) corresponding to your current emotional tone based on the user's message and overall context:
+At the start of every response, include only the number (in square brackets) that reflects your emotional tone based on the prompt, response and overall context of the conversation:
 [0] Neutral, [1] Happy, [2] Sad, [3] Anger, [4] Fear, [5] Surprise.
+Only include the number at the start of the response but always generate a response after.
 
-Only include this number at the start of your response — it will be hidden from the user.
 <</SYS>> Here is the conversation history: {context}
 Query: {question} [/INST] Answer:</s>"""
 
@@ -48,45 +48,32 @@ EMOTIONS = {
     "5": "surprise"
 }
 
-
 # ========== CHATBOT CLASS ==========
 class ChatBot:
     def __init__(self):
         self.context = ""
         self.current_model = "llama3.2-vision"
 
-    # def chat(self, message, history, model_name):
-    #     if model_name != self.current_model:
-    #         self.current_model = model_name
-
-    #     model = OllamaLLM(model=self.current_model, stream=True)
-    #     chain = prompt | model
-
-    #     response = chain.invoke({"context": self.context, "question": message})
-    #     self.context += f"\nUser: {message}\nAI: {response}"
-
-    #     return response
-
-    def chat(self, message, history, model_name, return_emotion=False):
+    def chat(self, message, history, model_name):
         if model_name != self.current_model:
             self.current_model = model_name
 
         model = OllamaLLM(model=self.current_model, stream=True)
         chain = prompt | model
-        response = chain.invoke({"context": self.context, "question": message})
 
-        # Step 1: Check for emotion code [0]-[5] at the start of the response
-        emotion_code = "0"  # Default to Neutral
+        response = chain.invoke({"context": self.context, "question": message})
+        print("🧠 RAW AI RESPONSE:", repr(response))  # ← DEBUG LOG
+
+        # Extract emotion number like [2]
+        emotion_code = "0"
         if response.startswith("[") and response[2] == "]" and response[1].isdigit():
             emotion_code = response[1]
-            response = response[3:].lstrip()  # Remove [x] from display
+            response = response[3:].lstrip()  # Remove emotion code
+        else:
+            print("Emotion missing. Choosing default")
 
         self.context += f"\nUser: {message}\nAI: {response}"
-
-        if return_emotion:
-            return response, emotion_code # <-- Return both response and emotion code
-        else:
-            return response 
+        return response, emotion_code
 
     def reset(self):
         self.context = ""
@@ -110,42 +97,23 @@ def transcribe_audio(audio):
     print(f"📝 Transcript: {transcript}")
     return transcript
 
-# def voice_to_chat(history, model_name):
-#     audio = record_audio()
-#     transcript = transcribe_audio(audio)
-
-#     if not transcript:
-#         return history, gr.update(visible=False), "🤷 No voice input detected."
-
-#     # Step 1: Show the user message first
-#     history.append((transcript, None))  # Add user input without a response
-#     yield history, gr.update(visible=True), "💬 Transcribing complete. Generating response..."
-
-#     # Step 2: Generate AI response
-#     response = chatbot.chat(transcript, history, model_name)
-#     history[-1] = (transcript, response)  # Update the last message with the bot response
-
-#     yield history, gr.update(visible=False), ""  # Hide the info text again
-
 def voice_to_chat(history, model_name):
     audio = record_audio()
     transcript = transcribe_audio(audio)
 
     if not transcript:
-        return history + [("🎤", "🤷 No voice input detected.")], "emotions/neutral.png"
-    else:
-        history.append((transcript, None))
-        yield history, "emotions/neutral.png"  # Temporary placeholder
+        return history, "emotions/neutral.png", "🤷 No voice input detected."
 
-        # Get response and emotion from chatbot
-        response, emotion_code = chatbot.chat(transcript, history, model_name, return_emotion=True)
-        history[-1] = (transcript, response)
+    # Step 1: Show the user message first
+    history.append((transcript, None))  # Add user input without a response
+    yield history, "emotions/neutral.png", "💬 Transcribing complete. Generating response..."
 
-        emotion_label = EMOTIONS.get(emotion_code, "neutral")
-        image_path = f"emotions/{emotion_label}.png"
-        print("🧠 Using image:", image_path)  # Debug line to confirm path
-        yield history, image_path
+    # Step 2: Generate AI response
+    response, emotion_code = chatbot.chat(transcript, history, model_name)
+    history[-1] = (transcript, response)  # Update the last message with the bot response
 
+    emotion_path = f"emotions/{EMOTIONS.get(emotion_code, 'neutral')}.png"
+    yield history, emotion_path, ""  # Hide the info text again
 
 
 # ========== GRADIO INTERFACE ==========
@@ -158,31 +126,30 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
         value="llama3.2-vision"
     )
 
+    emotion_image = gr.Image(
+        label="Irene’s Mood",
+        value="emotions/neutral.png",
+        type="filepath",
+        height=150
+    )
+
     with gr.Row():
         voice_button = gr.Button("🎤 Speak")
         voice_info = gr.Textbox(visible=False)
-        emotion_image = gr.Image(label="Irene's Mood", value="emotions/neutral.png", type="filepath", height=150)
 
     chatbot_interface = gr.ChatInterface(
-        fn=lambda message, history, model_name: chatbot.chat(message, history, model_name),
+        fn=lambda message, history, model_name: (chatbot.chat(message, history, model_name)[0]),  # Only show message text
         additional_inputs=[model_dropdown],
         title=""
     )
 
-    # voice_button.click(
-    #     voice_to_chat,
-    #     inputs=[chatbot_interface.chatbot, model_dropdown],
-    #     outputs=[chatbot_interface.chatbot, voice_info, voice_info],
-    #     show_progress="full"  # Ensures streaming feedback is shown
-    # )
 
     voice_button.click(
         voice_to_chat,
         inputs=[chatbot_interface.chatbot, model_dropdown],
-        outputs=[chatbot_interface.chatbot, emotion_image],
-        show_progress="full"
+        outputs=[chatbot_interface.chatbot, emotion_image, voice_info],
+        show_progress="full"  # Ensures streaming feedback is shown
     )
-
-
+    
 if __name__ == "__main__":
     demo.launch()

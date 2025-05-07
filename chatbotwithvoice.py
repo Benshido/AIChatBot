@@ -74,19 +74,6 @@ def transcribe_audio(audio):
     print(f"📝 Transcript: {transcript}")
     return transcript
 
-# def voice_to_chat(history, model_name):
-#     audio = record_audio()
-#     transcript = transcribe_audio(audio)
-#     if not transcript:
-#         return history, gr.update(visible=False), "🤷 No voice input detected."
-
-#     # Chatbot generates response
-#     response = chatbot.chat(transcript, history, model_name)
-
-#     # Add transcript and response into chat
-#     updated_history = history + [(transcript, response)]
-#     return updated_history, gr.update(visible=False), ""  # Hide loading / clear info
-
 def voice_to_chat(history, model_name):
     audio = record_audio()
     transcript = transcribe_audio(audio)
@@ -131,12 +118,6 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
         outputs=[chatbot_interface.chatbot, voice_info, voice_info],
         show_progress="full"  # Ensures streaming feedback is shown
     )
-
-    # voice_button.click(
-    #     voice_to_chat,
-    #     inputs=[chatbot_interface.chatbot, model_dropdown],
-    #     outputs=[chatbot_interface.chatbot, voice_info, voice_info]  # dummy second textbox to suppress info
-    # )
-
+    
 if __name__ == "__main__":
     demo.launch()
