@@ -115,6 +115,12 @@ def voice_to_chat(history, model_name):
     emotion_path = f"emotions/{EMOTIONS.get(emotion_code, 'neutral')}.png"
     yield history, emotion_path, ""  # Hide the info text again
 
+# ========== TEXT CHAT HANDLER ==========
+def handle_text_chat(message, history, model_name):
+    response, emotion_code = chatbot.chat(message, history, model_name)
+    history.append((message, response))
+    emotion_path = f"emotions/{EMOTIONS.get(emotion_code, 'neutral')}.png"
+    return history, emotion_path, ""  # Clear textbox content with ""
 
 # ========== GRADIO INTERFACE ==========
 with gr.Blocks(css="footer {visibility: hidden}") as demo:
@@ -127,7 +133,7 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
     )
 
     emotion_image = gr.Image(
-        label="Irene’s Mood",
+        label="Irene's Mood",
         value="emotions/neutral.png",
         type="filepath",
         height=150
@@ -137,18 +143,37 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
         voice_button = gr.Button("🎤 Speak")
         voice_info = gr.Textbox(visible=False)
 
-    chatbot_interface = gr.ChatInterface(
-        fn=lambda message, history, model_name: (chatbot.chat(message, history, model_name)[0]),  # Only show message text
-        additional_inputs=[model_dropdown],
-        title=""
+    # chatbot_interface = gr.ChatInterface(
+    #     fn=lambda message, history, model_name: (chatbot.chat(message, history, model_name)[0]),  # Only show message text
+    #     additional_inputs=[model_dropdown],
+    #     title=""
+    # )
+
+    chatbot_display = gr.Chatbot()
+    text_input = gr.Textbox(placeholder="Type your message here and press Enter...", lines=1)
+
+    def wrapped_handle_text_chat(message, history, model):
+        result = handle_text_chat(message, history, model)
+        return result[0], result[1], ""  # clear input after submit
+
+    text_input.submit(
+        wrapped_handle_text_chat,
+        inputs=[text_input, chatbot_display, model_dropdown],
+        outputs=[chatbot_display, emotion_image, text_input]
     )
 
+    # voice_button.click(
+    #     voice_to_chat,
+    #     inputs=[chatbot_interface.chatbot, model_dropdown],
+    #     outputs=[chatbot_interface.chatbot, emotion_image, voice_info],
+    #     show_progress="full"  # Ensures streaming feedback is shown
+    # )
 
     voice_button.click(
         voice_to_chat,
-        inputs=[chatbot_interface.chatbot, model_dropdown],
-        outputs=[chatbot_interface.chatbot, emotion_image, voice_info],
-        show_progress="full"  # Ensures streaming feedback is shown
+        inputs=[chatbot_display, model_dropdown],
+        outputs=[chatbot_display, emotion_image, voice_info],
+        show_progress="full"
     )
     
 if __name__ == "__main__":
