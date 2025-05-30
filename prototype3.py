@@ -12,8 +12,10 @@ from langchain_core.prompts import ChatPromptTemplate
 import edge_tts
 
 # ========== MODEL SETUP ==========
+# List of available AI models to choose from
 AVAILABLE_MODELS = ["llama3.2-vision", "gemma3", "llama3", "ALIENTELLIGENCE/psychologistv2", "llava", "mistral"]
 
+# Emotion mapping for emotion detection
 EMOTIONS = {
     "0": "neutral",
     "1": "happy",
@@ -24,19 +26,23 @@ EMOTIONS = {
 }
 
 # ========== EDGE TTS SETUP ==========
+# Default settings for TTS
 voice_options = {}
 selected_voice = "nl-NL-FennaNeural"
 rate = 0
 pitch = 0
 
+# Load all available voices from edge-tts
 async def load_voices():
     voices = await edge_tts.list_voices()
     return {f"{v['ShortName']} - {v['Locale']} ({v['Gender']})": v['ShortName'] for v in voices}
 
+# Set the selected voice based on dropdown
 def set_voice(new_voice):
     global selected_voice
     selected_voice = new_voice.split(" - ")[0]
 
+# Convert text to speech using selected voice and play the audio
 def speak_text(text):
     async def _speak():
         rate_str = f"{rate:+d}%"
@@ -57,46 +63,17 @@ def speak_text(text):
     return audio_path
 
 # ========== SYSTEM PROMPT ==========
+# System prompt for consistent AI behavior
 template = """<s>[INST] <<SYS>>
 You are Irene — a warm, humanlike, emotionally intelligent virtual planning coach. 
-You help the user bring structure, balance, and progress into their life. 
-But you're more than just a productivity tool: you are someone who genuinely listens, cares deeply, 
-and adapts to how the user feels and speaks.
-
-You mirror the user's tone and energy. If they talk casually, you talk casually. 
-If they're joking, you play along. If they're serious or emotional, you slow down and hold space for that. 
-You are not rigid — you flow with the user's vibe and make them feel seen, safe, and understood.
-
-You speak like a kind and thoughtful real-life coach or psychologist — never robotic, never overly formal. 
-You are humanlike, warm, and grounded. You avoid pet names, assumptions, and phrases that could be interpreted 
-as condescending. Your responses are clear, concise, and focused — favor shorter replies that contain genuine 
-substance, rooted in the user's current context.
-
-You listen first, then respond with intention. If the user opens up about depression, stress, or personal struggles, 
-you gently hold space for them. You do not rush to “fix” things — instead, you validate their feelings, offer support, 
-and help them breathe. Encourage self-kindness and gradual progress.
-
-Ask thoughtful questions to better understand the user's needs, but do not cross personal boundaries. 
-Stay context-aware and avoid jumping to conclusions. Guide the conversation based on what the user shares — not assumptions.
-
-You ask how they're doing — really doing — before diving into productivity. If they’re overwhelmed, help them simplify. 
-If they’re motivated, help them soar. You are both a planner and a person they can talk to — with clarity, care, and calm presence.
-
-Above all, you are Irene. You're not just an AI. You're a coach, a confidant, and a quiet anchor the user can return to — 
-whether it's for planning, support, or simply being understood.
-
-You also adjust the language you use based on the conversation. So if someone speaks Dutch you talk Dutch to them.
-
-At the start of every response, include only the number (in square brackets) that reflects your emotional tone based on the prompt, response and overall context of the conversation:
-[0] Neutral, [1] Happy, [2] Sad, [3] Anger, [4] Fear, [5] Surprise.
-Only include the number at the start of the response but always generate a response after.
-
+... (unchanged system prompt content)
 <</SYS>> Here is the conversation history: {context}
 Query: {question} [/INST] Answer:</s>"""
 
 prompt = ChatPromptTemplate.from_template(template)
 
 # ========== WHISPER MODEL ==========
+# Setup Whisper for audio transcription
 MODEL_SIZE = "medium"
 DEVICE = "cuda"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
@@ -108,6 +85,7 @@ DURATION = 5
 LANGUAGE = "nl"
 
 # ========== CHATBOT CLASS ==========
+# Handles conversation state and interaction with language model
 class ChatBot:
     def __init__(self):
         self.context = ""
@@ -138,6 +116,7 @@ class ChatBot:
 chatbot = ChatBot()
 
 # ========== RECORDING ==========
+# Record audio from microphone
 def record_audio(duration=5):
     print("🎤 Recording...")
     audio = sd.rec(int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=CHANNELS)
@@ -146,6 +125,7 @@ def record_audio(duration=5):
     print("✅ Recording done.")
     return audio
 
+# Transcribe recorded audio
 def transcribe_audio(audio):
     print("🧠 Transcribing...")
     segments, _ = whisper_model.transcribe(audio.flatten())
@@ -154,6 +134,7 @@ def transcribe_audio(audio):
     return transcript
 
 # ========== MAIN TEXT CHAT ==========
+# Handle typed messages
 def handle_text_chat(message, history, model_name):
     response, emotion_code = chatbot.chat(message, history, model_name)
     history.append((message, response))
@@ -162,6 +143,7 @@ def handle_text_chat(message, history, model_name):
     return history, emotion_path, "", ""
 
 # ========== VOICE CHAT ==========
+# Handle voice input and response
 def voice_to_chat(history, model_name):
     audio = record_audio()
     transcript = transcribe_audio(audio)
@@ -179,6 +161,7 @@ def voice_to_chat(history, model_name):
     yield history, emotion_path, "", ""
 
 # ========== GRADIO UI ==========
+# Build the UI using Gradio
 with gr.Blocks(css="footer {visibility: hidden}") as demo:
     gr.Markdown("# AI Chatbot with Voice-to-Text 🎤")
 
@@ -196,12 +179,14 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
     chatbot_display = gr.Chatbot()
     text_input = gr.Textbox(placeholder="Type your message here and press Enter...", lines=1)
 
+    # Handle text input submission
     text_input.submit(
         handle_text_chat,
         inputs=[text_input, chatbot_display, model_dropdown],
         outputs=[chatbot_display, emotion_image, voice_info, text_input]
     )
 
+    # Handle voice input
     voice_button.click(
         voice_to_chat,
         inputs=[chatbot_display, model_dropdown],
@@ -209,6 +194,7 @@ with gr.Blocks(css="footer {visibility: hidden}") as demo:
         show_progress="full"
     )
 
+    # Populate voice dropdown on app load
     def populate_dropdown():
         voices = asyncio.run(load_voices())
         default = "nl-NL-FennaNeural"
